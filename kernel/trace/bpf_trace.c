@@ -436,34 +436,24 @@ BPF_CALL_5(bpf_trace_printk, char *, fmt, u32, fmt_size, u64, arg1,
 			    !ispunct(fmt[i + 1]))
 				return -EINVAL;
 
-			goto fmt_next;
-		} else if (fmt[i] == 's') {
-			mod[fmt_cnt]++;
-			fmt_ptype = fmt[i];
-fmt_str:
-			if (str_seen)
-				/* allow only one '%s' per fmt string */
-				return -EINVAL;
-			str_seen = true;
-
-			if (fmt[i + 1] != 0 &&
-			    !isspace(fmt[i + 1]) &&
-			    !ispunct(fmt[i + 1]))
-				return -EINVAL;
-
-			switch (fmt_cnt) {
-			case 0:
-				unsafe_ptr = (void *)(long)arg1;
-				arg1 = (long)buf;
-				break;
-			case 1:
-				unsafe_ptr = (void *)(long)arg2;
-				arg2 = (long)buf;
-				break;
-			case 2:
-				unsafe_ptr = (void *)(long)arg3;
-				arg3 = (long)buf;
-				break;
+				switch (fmt_cnt) {
+				case 1:
+					unsafe_addr = arg1;
+					arg1 = (long) buf;
+					break;
+				case 2:
+					unsafe_addr = arg2;
+					arg2 = (long) buf;
+					break;
+				case 3:
+					unsafe_addr = arg3;
+					arg3 = (long) buf;
+					break;
+				}
+				buf[0] = 0;
+				strncpy_from_user_nofault(buf,
+						    (void *) (long) unsafe_addr,
+						    sizeof(buf));
 			}
 
 			bpf_trace_copy_string(buf, unsafe_ptr, fmt_ptype,
@@ -1005,6 +995,41 @@ static const struct bpf_func_proto bpf_current_task_under_cgroup_proto = {
 	.ret_type       = RET_INTEGER,
 	.arg1_type      = ARG_CONST_MAP_PTR,
 	.arg2_type      = ARG_ANYTHING,
+};
+
+BPF_CALL_3(bpf_probe_read_str, void *, dst, u32, size,
+	   const void *, unsafe_ptr)
+{
+	int ret;
+
+	ret = security_locked_down(LOCKDOWN_BPF_READ);
+	if (ret < 0)
+		goto out;
+
+	/*
+	 * The strncpy_from_user_nofault() call will likely not fill the entire
+	 * buffer, but that's okay in this circumstance as we're probing
+	 * arbitrary memory anyway similar to bpf_probe_read() and might
+	 * as well probe the stack. Thus, memory is explicitly cleared
+	 * only in error case, so that improper users ignoring return
+	 * code altogether don't copy garbage; otherwise length of string
+	 * is returned that can be used for bpf_perf_event_output() et al.
+	 */
+	ret = strncpy_from_user_nofault(dst, unsafe_ptr, size);
+	if (unlikely(ret < 0))
+out:
+		memset(dst, 0, size);
+
+	return ret;
+}
+
+static const struct bpf_func_proto bpf_probe_read_str_proto = {
+	.func		= bpf_probe_read_str,
+	.gpl_only	= true,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_UNINIT_MEM,
+	.arg2_type	= ARG_CONST_SIZE_OR_ZERO,
+	.arg3_type	= ARG_ANYTHING,
 };
 
 struct send_signal_irq_work {
