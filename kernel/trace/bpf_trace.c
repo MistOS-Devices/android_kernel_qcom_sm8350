@@ -436,24 +436,34 @@ BPF_CALL_5(bpf_trace_printk, char *, fmt, u32, fmt_size, u64, arg1,
 			    !ispunct(fmt[i + 1]))
 				return -EINVAL;
 
-				switch (fmt_cnt) {
-				case 1:
-					unsafe_addr = arg1;
-					arg1 = (long) buf;
-					break;
-				case 2:
-					unsafe_addr = arg2;
-					arg2 = (long) buf;
-					break;
-				case 3:
-					unsafe_addr = arg3;
-					arg3 = (long) buf;
-					break;
-				}
-				buf[0] = 0;
-				strncpy_from_user_nofault(buf,
-						    (void *) (long) unsafe_addr,
-						    sizeof(buf));
+				goto fmt_next;
+		} else if (fmt[i] == 's') {
+			mod[fmt_cnt]++;
+			fmt_ptype = fmt[i];
+fmt_str:
+			if (str_seen)
+				/* allow only one '%s' per fmt string */
+				return -EINVAL;
+			str_seen = true;
+
+			if (fmt[i + 1] != 0 &&
+			    !isspace(fmt[i + 1]) &&
+			    !ispunct(fmt[i + 1]))
+				return -EINVAL;
+
+			switch (fmt_cnt) {
+			case 0:
+				unsafe_ptr = (void *)(long)arg1;
+				arg1 = (long)buf;
+				break;
+			case 1:
+				unsafe_ptr = (void *)(long)arg2;
+				arg2 = (long)buf;
+				break;
+			case 2:
+				unsafe_ptr = (void *)(long)arg3;
+				arg3 = (long)buf;
+				break;
 			}
 
 			bpf_trace_copy_string(buf, unsafe_ptr, fmt_ptype,
